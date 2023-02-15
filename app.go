@@ -6,46 +6,73 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
+type File struct {
+	NodeName string
+	Path     string
+	Content  []byte
+}
 type User struct {
-	Name string
-	// Files
+	Name  string
+	Files []*File
 }
 
-func userFiles(path string) {
+func UserFiles(path string) (files []*File) {
 	err := filepath.Walk(path,
 		func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
 			if filepath.Ext(path) == ".md" {
-				fmt.Println(path)
+				// fmt.Println(path)
+				content, err := ioutil.ReadFile(path)
+				if err != nil {
+					panic(err)
+				}
+				files = append(files, &File{
+					NodeName: strings.TrimSuffix(info.Name(), ".md"),
+					Path:     path,
+					Content:  content,
+				})
 			}
 			return nil
 		})
 	if err != nil {
 		panic(err)
 	}
+	return files
 }
 
-func main() {
+func Users() (users []*User) {
 	rootdir := "./garden"
-	var users []User
-
 	userDirs, err := ioutil.ReadDir(rootdir)
 
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	for _, file := range userDirs {
 		if file.IsDir() {
-			users = append(users, User{Name: file.Name()})
-			fmt.Println(file.Name())
+			files := UserFiles(fmt.Sprintf("%s/%s", rootdir, file.Name()))
+			// fmt.Println(paths)
+			users = append(users, &User{
+				Name:  file.Name(),
+				Files: files,
+			})
+			// fmt.Println(file.Name())
 		}
 	}
-	fmt.Println(users)
+	return users
+}
 
-	userFiles("garden/vera")
+func main() {
+	users := Users()
+	for _, user := range users {
+		if user.Name == "vera" {
+			for _, file := range user.Files {
+				fmt.Println(file.NodeName)
+			}
+		}
+	}
 }
