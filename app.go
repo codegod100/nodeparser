@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -8,30 +10,41 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/sqlitedialect"
+	"github.com/uptrace/bun/driver/sqliteshim"
 )
 
 type Edge struct {
-	Incoming string
-	Outgoing string
+	bun.BaseModel `bun:"table:edges,alias:e"`
+	Incoming      string
+	Outgoing      string
 }
 type Graph struct {
 	Edges []*Edge
 }
 
 type File struct {
-	NodeName string
-	Path     string
-	Content  []byte
-	Outlinks []string
+	ID            int64 `bun:",pk,autoincrement"`
+	bun.BaseModel `bun:"table:files,alias:f"`
+	NodeName      string
+	Path          string
+	Content       []byte
+	Outlinks      []string
+	User          *User `bun:"rel:belongs-to,join:user_id=id"`
+	UserID        int64
 }
 type User struct {
-	Name  string
-	Files []*File
+	ID            int64 `bun:",pk,autoincrement"`
+	bun.BaseModel `bun:"table:users,alias:u"`
+	Name          string
 }
 
 var GRAPH = &Graph{}
 
-func UserFiles(path string) (files []*File) {
+func UserFiles(path string, user *User, db *bun.DB) (files []*File) {
+	ctx := context.Background()
 	edges := GRAPH.Edges
 	err := filepath.Walk(path,
 		func(path string, info os.FileInfo, err error) error {
@@ -45,17 +58,23 @@ func UserFiles(path string) (files []*File) {
 					panic(err)
 				}
 				outlinks := ParseLinks(string(content))
-				nodeName := strings.TrimSuffix(info.Name(), ".md")
-				files = append(files, &File{
+				nodeName := strings.ToLower(strings.TrimSuffix(info.Name(), ".md"))
+				uq, err := db.NewInsert().Model(user).Exec(ctx)
+
+				fmt.Println(uq, err, user)
+				file := &File{
 					NodeName: nodeName,
 					Path:     path,
 					Content:  content,
 					Outlinks: outlinks,
-				})
+					UserID:   user.ID,
+				}
+				_, err = db.NewInsert().Model(file).Exec(ctx)
+				files = append(files, file)
 				for _, outlink := range outlinks {
 					edges = append(edges, &Edge{
 						Incoming: nodeName,
-						Outgoing: outlink,
+						Outgoing: strings.ToLower(outlink),
 					})
 				}
 			}
@@ -68,7 +87,7 @@ func UserFiles(path string) (files []*File) {
 	return files
 }
 
-func Users() (users []*User) {
+func Users(db *bun.DB) (users []*User) {
 	rootdir := "./garden"
 	userDirs, err := ioutil.ReadDir(rootdir)
 
@@ -77,12 +96,16 @@ func Users() (users []*User) {
 	}
 	for _, file := range userDirs {
 		if file.IsDir() {
-			files := UserFiles(fmt.Sprintf("%s/%s", rootdir, file.Name()))
 			// fmt.Println(paths)
-			users = append(users, &User{
-				Name:  file.Name(),
-				Files: files,
-			})
+			user := &User{
+				Name: file.Name(),
+			}
+			// _, err := db.NewInsert().Model(user).Exec(ctx)
+			// if err != nil {
+			// 	panic(err)
+			// }
+			UserFiles(fmt.Sprintf("%s/%s", rootdir, file.Name()), user, db)
+			users = append(users, user)
 			// fmt.Println(file.Name())
 		}
 	}
@@ -108,16 +131,26 @@ func ParseLinks(content string) []string {
 }
 
 func main() {
-	users := Users()
-	for _, user := range users {
-		if user.Name == "vera" {
-			for _, file := range user.Files {
-				fmt.Println("NODE:", file.NodeName, "OUTLINKS", file.Outlinks)
-			}
-		}
+	ctx := context.Background()
+	sqldb, err := sql.Open(sqliteshim.ShimName, "agora.db")
+	if err != nil {
+		panic(err)
 	}
 
-	for _, edge := range GRAPH.Edges {
-		fmt.Println("INCOMING", edge.Incoming, "OUTGOING", edge.Outgoing)
+	db := bun.NewDB(sqldb, sqlitedialect.New())
+	_, err = db.NewCreateTable().Model((*File)(nil)).Exec(ctx)
+	_, err = db.NewCreateTable().Model((*User)(nil)).Exec(ctx)
+	if err != nil {
+		fmt.Println(err)
+	}
+	Users(db)
+
+	var people []User
+	err = db.NewSelect().Model(&people).OrderExpr("id ASC").Limit(10).Scan(ctx)
+	if err != nil {
+		panic(err)
+	}
+	for _, person := range people {
+		fmt.Println(person.Name)
 	}
 }
